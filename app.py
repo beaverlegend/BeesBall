@@ -1,34 +1,41 @@
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, request, jsonify
 import joblib
-import pandas as pd
+from src.evaluator import calculate_optimal_approach
 
 app = Flask(__name__)
 
-# Load trained ML model at server startup
-model = joblib.load('pitch_model.pkl')
-
+# Load models and encoder
+clf = joblib.load('pitch_clf.pkl')
+reg = joblib.load('run_val_reg.pkl')
+encoder = joblib.load('pitch_encoder.pkl')
 
 @app.route('/api/predict', methods=['POST'])
 def predict():
-    data = request.json
-
-    # Convert request into DataFrame matching model input features
-    input_data = pd.DataFrame([
-        {
-            'balls': int(data.get('balls', 0)),
-            'strikes': int(data.get('strikes', 0)),
-            'outs_when_up': int(data.get('outs', 0)),
-            'inning': int(data.get('inning', 1)),
-        }
-    ])
-
-    # Predict probabilities for each pitch type
-    probabilities = model.predict_proba(input_data)[0]
-    classes = model.classes_
-
-    # Format result map (e.g., {'FF': 0.55, 'SL': 0.30, 'CH': 0.15})
-    predictions = {
-        cls: round(float(prob), 3) for cls, prob in zip(classes, probabilities)
+    data = request.json or {}
+    
+    # Parse inputs with robust defaults
+    p_throws = data.get('p_throws', 'R').upper()
+    stand = data.get('stand', 'R').upper()
+    
+    input_params = {
+        'balls': int(data.get('balls', 0)),
+        'strikes': int(data.get('strikes', 0)),
+        'outs': int(data.get('outs', 0)),
+        'inning': int(data.get('inning', 1)),
+        'same_handedness': 1 if p_throws == stand else 0
     }
+    
+    evaluation = calculate_optimal_approach(clf, reg, encoder, input_params)
+    
+    return jsonify({
+        'status': 'success',
+        'matchup_context': {
+            'pitcher_hand': p_throws,
+            'batter_hand': stand,
+            'count': f"{input_params['balls']}-{input_params['strikes']}"
+        },
+        'results': evaluation
+    })
 
-    return jsonify({'predicted_pitch_probabilities': predictions})
+if __name__ == '__main__':
+    app.run(debug=True, port=5000)
